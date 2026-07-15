@@ -1,0 +1,23 @@
+﻿# Dependências
+node_modules/
+
+# Variáveis privadas
+.env
+.env.*
+!.env.example
+
+# Banco de dados local
+data/*
+!data/.gitkeep
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor e sistema
+.vscode/
+.DS_Store
+Thumbs.db
