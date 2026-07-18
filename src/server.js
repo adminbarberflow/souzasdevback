@@ -1,10 +1,13 @@
-﻿import http from "node:http";
+import http from "node:http";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   clearAuthCookie,
   createAuthCookie,
-  getAuthToken
+  getAuthToken,
+  parseCookies
 } from "./auth/cookies.js";
 
 import {
@@ -28,12 +31,26 @@ import {
   updateContactStatus
 } from "./database/database.js";
 
+import {
+  logError,
+  logInfo,
+  logWarn
+} from "./observability.js";
+
 const PORT =
   Number(process.env.PORT) || 3000;
 
-const ALLOWED_ORIGIN =
+const currentFilePath = fileURLToPath(
+  import.meta.url
+);
+
+const ALLOWED_ORIGINS = (
   process.env.ALLOWED_ORIGIN?.trim() ||
-  "http://localhost:5500";
+  "http://localhost:5500"
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 const MAX_BODY_SIZE = 16_384;
 
@@ -42,6 +59,30 @@ const LOGIN_WINDOW_MS =
 
 const MAX_LOGIN_ATTEMPTS = 5;
 
+const RATE_LIMIT_WINDOW_MS =
+  Number(process.env.RATE_LIMIT_WINDOW_MS) ||
+  60_000;
+
+const MAX_CONTACT_REQUESTS =
+  Number(process.env.MAX_CONTACT_REQUESTS) ||
+  15;
+
+const MAX_AUTH_REQUESTS =
+  Number(process.env.MAX_AUTH_REQUESTS) || 10;
+
+const CSRF_COOKIE_NAME =
+  process.env.CSRF_COOKIE_NAME?.trim() ||
+  "portfolio_csrf";
+
+const CSRF_MAX_AGE = Number(
+  process.env.AUTH_COOKIE_MAX_AGE
+) || 7200;
+
+const TRUST_PROXY =
+  process.env.TRUST_PROXY
+    ?.trim()
+    .toLowerCase() === "true";
+
 const validStatuses = new Set([
   "new",
   "read",
@@ -49,6 +90,7 @@ const validStatuses = new Set([
 ]);
 
 const loginAttempts = new Map();
+const rateLimitBuckets = new Map();
 
 function sendJson(
   response,
@@ -69,10 +111,66 @@ function sendJson(
   response.end(JSON.stringify(data));
 }
 
-function setCorsHeaders(response) {
+function getAllowedOrigin(requestOrigin = "") {
+  if (
+    !requestOrigin ||
+    !ALLOWED_ORIGINS.includes(requestOrigin)
+  ) {
+    return "";
+  }
+
+  return requestOrigin;
+}
+
+function setSecurityHeaders(response) {
+  response.setHeader(
+    "X-Content-Type-Options",
+    "nosniff"
+  );
+
+  response.setHeader(
+    "X-Frame-Options",
+    "DENY"
+  );
+
+  response.setHeader(
+    "Referrer-Policy",
+    "no-referrer"
+  );
+
+  response.setHeader(
+    "Permissions-Policy",
+    "geolocation=(), microphone=(), camera=()"
+  );
+
+  response.setHeader(
+    "Cross-Origin-Opener-Policy",
+    "same-origin"
+  );
+
+
+}
+
+function setCorsHeaders(
+  response,
+  requestOrigin = ""
+) {
+  const allowedOrigin = getAllowedOrigin(
+    requestOrigin
+  );
+
+  response.setHeader(
+    "Vary",
+    "Origin"
+  );
+
+  if (!allowedOrigin) {
+    return false;
+  }
+
   response.setHeader(
     "Access-Control-Allow-Origin",
-    ALLOWED_ORIGIN
+    allowedOrigin
   );
 
   response.setHeader(
@@ -87,15 +185,11 @@ function setCorsHeaders(response) {
 
   response.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type"
+    "Content-Type, X-CSRF-Token"
   );
 
-  response.setHeader(
-    "Vary",
-    "Origin"
-  );
+  return true;
 }
-
 function requireJson(
   request,
   response
@@ -238,8 +332,128 @@ function validateContact(data) {
 }
 
 function getClientIdentifier(request) {
-  return request.socket.remoteAddress ||
-    "unknown";
+  const forwardedFor =
+    request.headers["x-forwarded-for"];
+
+  if (
+    TRUST_PROXY &&
+    typeof forwardedFor === "string"
+  ) {
+    const forwardedAddress =
+      forwardedFor
+        .split(",")[0]
+        .trim();
+
+    if (forwardedAddress) {
+      return forwardedAddress;
+    }
+  }
+
+  return (
+    request.socket.remoteAddress ||
+    "unknown"
+  );
+}
+function getRateLimitState(
+  clientId,
+  key,
+  maxRequests,
+  windowMs
+) {
+  const now = Date.now();
+  const bucket =
+    rateLimitBuckets.get(clientId) || new Map();
+
+  const current = bucket.get(key) || {
+    count: 0,
+    resetAt: now + windowMs
+  };
+
+  if (current.resetAt <= now) {
+    current.count = 0;
+    current.resetAt = now + windowMs;
+  }
+
+  if (current.count >= maxRequests) {
+    return {
+      blocked: true,
+      retryAfter: Math.max(
+        1,
+        Math.ceil(
+          (current.resetAt - now) / 1000
+        )
+      )
+    };
+  }
+
+  current.count += 1;
+  bucket.set(key, current);
+  rateLimitBuckets.set(clientId, bucket);
+
+  return {
+    blocked: false,
+    retryAfter: 0
+  };
+}
+
+function createCsrfCookie(token) {
+  const parts = [
+    `${CSRF_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "SameSite=Lax",
+    `Max-Age=${CSRF_MAX_AGE}`
+  ];
+
+  if (process.env.NODE_ENV === "production") {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
+}
+
+function clearCsrfCookie() {
+  const parts = [
+    `${CSRF_COOKIE_NAME}=`,
+    "Path=/",
+    "SameSite=Lax",
+    "Max-Age=0",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+  ];
+
+  if (process.env.NODE_ENV === "production") {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
+}
+
+function getCsrfToken(request) {
+  return (
+    parseCookies(request.headers.cookie || "")[
+      CSRF_COOKIE_NAME
+    ] || ""
+  );
+}
+
+function isCsrfValid(request) {
+  if (
+    request.method === "GET" ||
+    request.method === "OPTIONS"
+  ) {
+    return true;
+  }
+
+  const cookieToken = getCsrfToken(request);
+  const headerToken =
+    request.headers["x-csrf-token"] ||
+    request.headers["x-xsrf-token"] ||
+    "";
+
+  return Boolean(
+    cookieToken &&
+      headerToken &&
+      cookieToken === headerToken
+  );
 }
 
 function getLoginLimit(clientId) {
@@ -361,6 +575,28 @@ async function handleLogin(
     return;
   }
 
+  const authRateLimit = getRateLimitState(
+    clientId,
+    "auth:login",
+    MAX_AUTH_REQUESTS,
+    RATE_LIMIT_WINDOW_MS
+  );
+
+  if (authRateLimit.blocked) {
+    response.setHeader(
+      "Retry-After",
+      String(authRateLimit.retryAfter)
+    );
+
+    sendJson(response, 429, {
+      status: "error",
+      message:
+        "Muitas requisições. Tente novamente em alguns instantes."
+    });
+
+    return;
+  }
+
   const body = await readJsonBody(request);
 
   const email =
@@ -385,6 +621,7 @@ async function handleLogin(
 
   if (!admin || !passwordIsValid) {
     registerFailedLogin(clientId);
+    logWarn("Falha de login");
 
     sendJson(response, 401, {
       status: "error",
@@ -396,18 +633,27 @@ async function handleLogin(
   }
 
   clearLoginAttempts(clientId);
+  logInfo("Login realizado com sucesso", {
+    adminId: admin.id
+  });
 
   const token =
     await createAccessToken(admin);
 
+  const csrfToken = randomUUID().replace(/-/g, "");
+
   response.setHeader(
     "Set-Cookie",
-    createAuthCookie(token)
+    [
+      createAuthCookie(token),
+      createCsrfCookie(csrfToken)
+    ]
   );
 
   sendJson(response, 200, {
     status: "success",
     message: "Login realizado com sucesso.",
+    csrfToken,
 
     user: {
       id: admin.id,
@@ -422,7 +668,27 @@ async function handleRequest(
   request,
   response
 ) {
-  setCorsHeaders(response);
+  const requestOrigin =
+    request.headers.origin || "";
+
+  const corsAllowed = setCorsHeaders(
+    response,
+    requestOrigin
+  );
+
+  setSecurityHeaders(response);
+
+  if (
+    requestOrigin &&
+    !corsAllowed
+  ) {
+    sendJson(response, 403, {
+      status: "error",
+      message: "Origem não autorizada."
+    });
+
+    return;
+  }
 
   if (request.method === "OPTIONS") {
     response.statusCode = 204;
@@ -438,6 +704,27 @@ async function handleRequest(
     request.url || "/",
     `http://${host}`
   );
+
+  if (
+    request.method !== "GET" &&
+    request.method !== "OPTIONS" &&
+    ![
+      "/api/contact",
+      "/api/auth/login",
+      "/api/auth/csrf"
+    ].includes(url.pathname) &&
+    url.pathname.startsWith("/api/") &&
+    !isCsrfValid(request)
+  ) {
+    sendJson(response, 403, {
+      status: "error",
+      message:
+        "Token CSRF inválido ou ausente."
+    });
+
+    return;
+  }
+
 
   if (
     request.method === "GET" &&
@@ -474,6 +761,25 @@ async function handleRequest(
         storedContacts:
           countContacts()
       }
+    });
+
+    return;
+  }
+
+  if (
+    request.method === "GET" &&
+    url.pathname === "/api/auth/csrf"
+  ) {
+    const csrfToken = randomUUID().replace(/-/g, "");
+
+    response.setHeader(
+      "Set-Cookie",
+      createCsrfCookie(csrfToken)
+    );
+
+    sendJson(response, 200, {
+      status: "success",
+      csrfToken
     });
 
     return;
@@ -524,7 +830,7 @@ async function handleRequest(
   ) {
     response.setHeader(
       "Set-Cookie",
-      clearAuthCookie()
+      [clearAuthCookie(), clearCsrfCookie()]
     );
 
     sendJson(response, 200, {
@@ -541,6 +847,31 @@ async function handleRequest(
     url.pathname === "/api/contact"
   ) {
     if (!requireJson(request, response)) {
+      return;
+    }
+
+    const clientId =
+      getClientIdentifier(request);
+
+    const contactRateLimit = getRateLimitState(
+      clientId,
+      "contact",
+      MAX_CONTACT_REQUESTS,
+      RATE_LIMIT_WINDOW_MS
+    );
+
+    if (contactRateLimit.blocked) {
+      response.setHeader(
+        "Retry-After",
+        String(contactRateLimit.retryAfter)
+      );
+
+      sendJson(response, 429, {
+        status: "error",
+        message:
+          "Muitas mensagens enviadas. Tente novamente mais tarde."
+      });
+
       return;
     }
 
@@ -570,22 +901,9 @@ async function handleRequest(
     };
 
     createContact(contact);
-
-    console.log("");
-    console.log(
-      "Nova mensagem salva:"
-    );
-    console.log(`ID: ${contact.id}`);
-    console.log(
-      `Nome: ${contact.name}`
-    );
-    console.log(
-      `E-mail: ${contact.email}`
-    );
-    console.log(
-      `Data: ${contact.createdAt}`
-    );
-    console.log("");
+    logInfo("Mensagem recebida", {
+      contactId: contact.id
+    });
 
     sendJson(response, 201, {
       status: "success",
@@ -744,12 +1062,16 @@ async function handleRequest(
   });
 }
 
-const server = http.createServer(
-  (request, response) => {
+export function createAppServer() {
+  return http.createServer((request, response) => {
     handleRequest(
       request,
       response
     ).catch((error) => {
+      logError("Erro interno do servidor", {
+        message: error?.message || String(error)
+      });
+
       if (
         error.message === "INVALID_JSON"
       ) {
@@ -791,27 +1113,38 @@ const server = http.createServer(
 
       response.end();
     });
-  }
-);
+  });
+}
 
-server.listen(PORT, () => {
-  console.log(
-    `Servidor rodando em http://localhost:${PORT}`
-  );
-
-  console.log(
-    `Mensagens armazenadas: ${countContacts()}`
-  );
-
-  console.log(
-    "Autenticação JWT habilitada."
-  );
-});
-
+let server = null;
 let isShuttingDown = false;
 
+function startServer() {
+  if (server) {
+    return server;
+  }
+
+  server = createAppServer();
+
+  server.listen(PORT, () => {
+    console.log(
+      `Servidor rodando em http://localhost:${PORT}`
+    );
+
+    console.log(
+      `Mensagens armazenadas: ${countContacts()}`
+    );
+
+    console.log(
+      "Autenticação JWT habilitada."
+    );
+  });
+
+  return server;
+}
+
 function shutdown() {
-  if (isShuttingDown) {
+  if (isShuttingDown || !server) {
     return;
   }
 
@@ -832,5 +1165,12 @@ function shutdown() {
   });
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) ===
+    currentFilePath
+) {
+  startServer();
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}

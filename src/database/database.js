@@ -1,4 +1,4 @@
-﻿import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,19 +11,25 @@ const currentDirectory = path.dirname(
   currentFile
 );
 
-const dataDirectory = path.resolve(
+const defaultDataDirectory = path.resolve(
   currentDirectory,
   "../../data"
 );
 
-mkdirSync(dataDirectory, {
+const configuredDatabasePath =
+  process.env.DATABASE_PATH?.trim() || "";
+
+export const databasePath =
+  configuredDatabasePath
+    ? path.resolve(configuredDatabasePath)
+    : path.join(
+        defaultDataDirectory,
+        "portfolio.sqlite"
+      );
+
+mkdirSync(path.dirname(databasePath), {
   recursive: true
 });
-
-export const databasePath = path.join(
-  dataDirectory,
-  "portfolio.sqlite"
-);
 
 const database = new DatabaseSync(
   databasePath,
