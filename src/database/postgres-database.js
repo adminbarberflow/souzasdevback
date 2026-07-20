@@ -1,3 +1,11 @@
+import {
+  readFileSync
+} from "node:fs";
+
+import {
+  resolve
+} from "node:path";
+
 import pg from "pg";
 
 import {
@@ -48,6 +56,61 @@ const useSsl = readBooleanEnvironment(
   true
 );
 
+const sslCaPath =
+  process.env.DATABASE_SSL_CA_PATH
+    ?.trim() || "";
+
+function createSslConfiguration() {
+  if (!useSsl) {
+    return false;
+  }
+
+  if (!sslCaPath) {
+    return true;
+  }
+
+  const absoluteCaPath = resolve(
+    process.cwd(),
+    sslCaPath
+  );
+
+  let caCertificate;
+
+  try {
+    caCertificate = readFileSync(
+      absoluteCaPath,
+      "utf8"
+    );
+  } catch (error) {
+    throw new Error(
+      "Não foi possível carregar o certificado CA " +
+      `em ${absoluteCaPath}: ${error.message}`
+    );
+  }
+
+  if (
+    !caCertificate.includes(
+      "-----BEGIN CERTIFICATE-----"
+    ) ||
+    !caCertificate.includes(
+      "-----END CERTIFICATE-----"
+    )
+  ) {
+    throw new Error(
+      "O certificado CA configurado " +
+      "não é um arquivo PEM válido."
+    );
+  }
+
+  return {
+    ca: caCertificate,
+    rejectUnauthorized: true
+  };
+}
+
+const sslConfiguration =
+  createSslConfiguration();
+
 export const databasePath =
   "PostgreSQL";
 
@@ -71,7 +134,7 @@ const pool = new Pool({
       10000
     ),
 
-  ssl: useSsl
+  ssl: sslConfiguration
 });
 
 pool.on("error", (error) => {
