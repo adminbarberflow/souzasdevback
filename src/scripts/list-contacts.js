@@ -5,7 +5,7 @@
 } from "../database/database.js";
 
 try {
-  const contacts = listContacts();
+  const contacts = await listContacts();
 
   console.log(`\nBanco: ${databasePath}`);
   console.log(`Total de mensagens: ${contacts.length}\n`);
@@ -28,5 +28,5 @@ try {
     );
   }
 } finally {
-  closeDatabase();
+  await closeDatabase();
 }

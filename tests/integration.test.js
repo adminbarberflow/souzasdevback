@@ -49,8 +49,8 @@ const {
   "../src/database/database.js"
 );
 
-after(() => {
-  closeDatabase();
+after(async () => {
+  await closeDatabase();
 
   rmSync(testDirectory, {
     recursive: true,

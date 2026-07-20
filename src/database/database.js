@@ -229,7 +229,7 @@ const upsertAdminStatement =
       updated_at = excluded.updated_at
   `);
 
-export function createContact(contact) {
+export async function createContact(contact) {
   insertContactStatement.run(
     contact.id,
     contact.name,
@@ -242,7 +242,7 @@ export function createContact(contact) {
   return contact;
 }
 
-export function listContacts(status = "") {
+export async function listContacts(status = "") {
   if (status) {
     return listContactsByStatusStatement.all(
       status
@@ -252,11 +252,11 @@ export function listContacts(status = "") {
   return listContactsStatement.all();
 }
 
-export function findContactById(id) {
+export async function findContactById(id) {
   return findContactStatement.get(id);
 }
 
-export function updateContactStatus(
+export async function updateContactStatus(
   id,
   status
 ) {
@@ -273,14 +273,14 @@ export function updateContactStatus(
   return findContactById(id);
 }
 
-export function deleteContact(id) {
+export async function deleteContact(id) {
   const result =
     deleteContactStatement.run(id);
 
   return Number(result.changes) > 0;
 }
 
-export function getContactStats() {
+export async function getContactStats() {
   const result =
     contactStatsStatement.get();
 
@@ -294,21 +294,23 @@ export function getContactStats() {
   };
 }
 
-export function countContacts() {
-  return getContactStats().total;
+export async function countContacts() {
+  const stats = await getContactStats();
+
+  return stats.total;
 }
 
-export function findAdminByEmail(email) {
+export async function findAdminByEmail(email) {
   return findAdminByEmailStatement.get(
     email
   );
 }
 
-export function findAdminById(id) {
+export async function findAdminById(id) {
   return findAdminByIdStatement.get(id);
 }
 
-export function upsertAdmin(admin) {
+export async function upsertAdmin(admin) {
   upsertAdminStatement.run(
     admin.id,
     admin.name,
@@ -322,6 +324,6 @@ export function upsertAdmin(admin) {
   return findAdminByEmail(admin.email);
 }
 
-export function closeDatabase() {
+export async function closeDatabase() {
   database.close();
 }

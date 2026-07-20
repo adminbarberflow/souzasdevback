@@ -591,7 +591,9 @@ async function getAuthenticatedAdmin(
       return null;
     }
 
-    return findAdminById(payload.sub) || null;
+    return (
+      await findAdminById(payload.sub)
+    ) || null;
   } catch {
     return null;
   }
@@ -660,7 +662,7 @@ async function handleLogin(
       : "";
 
   const admin =
-    findAdminByEmail(email);
+    await findAdminByEmail(email);
 
   const passwordIsValid =
     admin &&
@@ -809,7 +811,7 @@ async function handleRequest(
       database: {
         status: "connected",
         storedContacts:
-          countContacts()
+          await countContacts()
       }
     });
 
@@ -950,7 +952,7 @@ async function handleRequest(
         new Date().toISOString()
     };
 
-    createContact(contact);
+    await createContact(contact);
     logInfo("Mensagem recebida", {
       contactId: contact.id
     });
@@ -1011,8 +1013,9 @@ async function handleRequest(
     sendJson(response, 200, {
       status: "success",
       contacts:
-        listContacts(status),
-      stats: getContactStats()
+        await listContacts(status),
+      stats:
+        await getContactStats()
     });
 
     return;
@@ -1051,7 +1054,7 @@ async function handleRequest(
     }
 
     const contact =
-      updateContactStatus(
+      await updateContactStatus(
         contactId,
         status
       );
@@ -1085,7 +1088,7 @@ async function handleRequest(
       );
 
     const deleted =
-      deleteContact(contactId);
+      await deleteContact(contactId);
 
     if (!deleted) {
       sendJson(response, 404, {
@@ -1169,10 +1172,13 @@ export function createAppServer() {
 let server = null;
 let isShuttingDown = false;
 
-function startServer() {
+async function startServer() {
   if (server) {
     return server;
   }
+
+  const storedContacts =
+    await countContacts();
 
   server = createAppServer();
 
@@ -1182,7 +1188,7 @@ function startServer() {
     );
 
     console.log(
-      `Mensagens armazenadas: ${countContacts()}`
+      `Mensagens armazenadas: ${storedContacts}`
     );
 
     console.log(
@@ -1204,14 +1210,23 @@ function shutdown() {
     "\nEncerrando servidor..."
   );
 
-  server.close(() => {
-    closeDatabase();
+  server.close(async () => {
+    try {
+      await closeDatabase();
 
-    console.log(
-      "Servidor e banco encerrados."
-    );
+      console.log(
+        "Servidor e banco encerrados."
+      );
 
-    process.exit(0);
+      process.exit(0);
+    } catch (error) {
+      console.error(
+        "Não foi possível encerrar o banco:",
+        error
+      );
+
+      process.exit(1);
+    }
   });
 }
 
@@ -1220,7 +1235,24 @@ if (
   path.resolve(process.argv[1]) ===
     currentFilePath
 ) {
-  startServer();
+  startServer().catch(async (error) => {
+    console.error(
+      "Não foi possível iniciar o servidor:",
+      error
+    );
+
+    try {
+      await closeDatabase();
+    } catch (closeError) {
+      console.error(
+        "Também não foi possível encerrar o banco:",
+        closeError
+      );
+    }
+
+    process.exitCode = 1;
+  });
+
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }

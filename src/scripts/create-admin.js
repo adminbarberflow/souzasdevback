@@ -48,7 +48,7 @@ if (name.length < 2 || name.length > 80) {
     const passwordHash =
       await hashPassword(password);
 
-    const admin = upsertAdmin({
+    const admin = await upsertAdmin({
       id: randomUUID(),
       name,
       email,
@@ -76,4 +76,4 @@ if (name.length < 2 || name.length > 80) {
   }
 }
 
-closeDatabase();
+await closeDatabase();
