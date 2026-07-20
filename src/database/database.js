@@ -8,6 +8,11 @@ const adapterPaths = new Map([
   [
     "sqlite",
     "./sqlite-database.js"
+  ],
+
+  [
+    "postgres",
+    "./postgres-database.js"
   ]
 ]);
 
