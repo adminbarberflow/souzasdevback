@@ -53,6 +53,10 @@ const PORT = readPositiveIntegerEnv(
   }
 );
 
+const HOST =
+  process.env.HOST?.trim() ||
+  "0.0.0.0";
+
 const currentFilePath = fileURLToPath(
   import.meta.url
 );
@@ -1182,9 +1186,9 @@ async function startServer() {
 
   server = createAppServer();
 
-  server.listen(PORT, () => {
+  server.listen(PORT, HOST, () => {
     console.log(
-      `Servidor rodando em http://localhost:${PORT}`
+      `Servidor rodando em http://${HOST}:${PORT}`
     );
 
     console.log(
