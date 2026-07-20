@@ -37,8 +37,21 @@ import {
   logWarn
 } from "./observability.js";
 
-const PORT =
-  Number(process.env.PORT) || 3000;
+import {
+  readPositiveIntegerEnv
+} from "./config.js";
+
+import {
+  cleanupExpiredRateLimitEntries
+} from "./rate-limit.js";
+
+const PORT = readPositiveIntegerEnv(
+  "PORT",
+  3000,
+  {
+    max: 65_535
+  }
+);
 
 const currentFilePath = fileURLToPath(
   import.meta.url
@@ -60,23 +73,32 @@ const LOGIN_WINDOW_MS =
 const MAX_LOGIN_ATTEMPTS = 5;
 
 const RATE_LIMIT_WINDOW_MS =
-  Number(process.env.RATE_LIMIT_WINDOW_MS) ||
-  60_000;
+  readPositiveIntegerEnv(
+    "RATE_LIMIT_WINDOW_MS",
+    60_000
+  );
 
 const MAX_CONTACT_REQUESTS =
-  Number(process.env.MAX_CONTACT_REQUESTS) ||
-  15;
+  readPositiveIntegerEnv(
+    "MAX_CONTACT_REQUESTS",
+    15
+  );
 
 const MAX_AUTH_REQUESTS =
-  Number(process.env.MAX_AUTH_REQUESTS) || 10;
+  readPositiveIntegerEnv(
+    "MAX_AUTH_REQUESTS",
+    10
+  );
 
 const CSRF_COOKIE_NAME =
   process.env.CSRF_COOKIE_NAME?.trim() ||
   "portfolio_csrf";
 
-const CSRF_MAX_AGE = Number(
-  process.env.AUTH_COOKIE_MAX_AGE
-) || 7200;
+const CSRF_MAX_AGE =
+  readPositiveIntegerEnv(
+    "AUTH_COOKIE_MAX_AGE",
+    7200
+  );
 
 const TRUST_PROXY =
   process.env.TRUST_PROXY
@@ -91,6 +113,30 @@ const validStatuses = new Set([
 
 const loginAttempts = new Map();
 const rateLimitBuckets = new Map();
+
+const RATE_LIMIT_CLEANUP_INTERVAL_MS =
+  60_000;
+
+let lastRateLimitCleanupAt = 0;
+
+function maybeCleanupRateLimitEntries(
+  now = Date.now()
+) {
+  if (
+    now - lastRateLimitCleanupAt <
+    RATE_LIMIT_CLEANUP_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  cleanupExpiredRateLimitEntries(
+    rateLimitBuckets,
+    loginAttempts,
+    now
+  );
+
+  lastRateLimitCleanupAt = now;
+}
 
 function sendJson(
   response,
@@ -361,6 +407,8 @@ function getRateLimitState(
   windowMs
 ) {
   const now = Date.now();
+
+  maybeCleanupRateLimitEntries(now);
   const bucket =
     rateLimitBuckets.get(clientId) || new Map();
 
@@ -458,6 +506,8 @@ function isCsrfValid(request) {
 
 function getLoginLimit(clientId) {
   const now = Date.now();
+
+  maybeCleanupRateLimitEntries(now);
 
   const current =
     loginAttempts.get(clientId);
