@@ -174,6 +174,16 @@ function getAllowedOrigin(requestOrigin = "") {
 
 function setSecurityHeaders(response) {
   response.setHeader(
+    "Content-Security-Policy",
+    "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+  );
+
+  response.setHeader(
+    "Strict-Transport-Security",
+    "max-age=15552000"
+  );
+
+  response.setHeader(
     "X-Content-Type-Options",
     "nosniff"
   );
@@ -198,9 +208,21 @@ function setSecurityHeaders(response) {
     "same-origin"
   );
 
+  response.setHeader(
+    "Cross-Origin-Resource-Policy",
+    "same-site"
+  );
 
+  response.setHeader(
+    "Origin-Agent-Cluster",
+    "?1"
+  );
+
+  response.setHeader(
+    "X-Permitted-Cross-Domain-Policies",
+    "none"
+  );
 }
-
 function setCorsHeaders(
   response,
   requestOrigin = ""

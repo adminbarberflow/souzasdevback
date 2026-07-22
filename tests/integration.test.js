@@ -388,3 +388,50 @@ test(
     });
   }
 );
+
+test(
+  "respostas da API incluem os headers de segurança reforçados",
+  async () => {
+    await withServer(async (server) => {
+      const result = await requestJson(
+        server,
+        "/api/status"
+      );
+
+      assert.equal(
+        result.headers[
+          "content-security-policy"
+        ],
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+      );
+
+      assert.equal(
+        result.headers[
+          "strict-transport-security"
+        ],
+        "max-age=15552000"
+      );
+
+      assert.equal(
+        result.headers[
+          "cross-origin-resource-policy"
+        ],
+        "same-site"
+      );
+
+      assert.equal(
+        result.headers[
+          "origin-agent-cluster"
+        ],
+        "?1"
+      );
+
+      assert.equal(
+        result.headers[
+          "x-permitted-cross-domain-policies"
+        ],
+        "none"
+      );
+    });
+  }
+);
